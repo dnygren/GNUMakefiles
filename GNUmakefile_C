@@ -1,0 +1,411 @@
+################################################################################
+# GNUmakefile : GNU makefile for overwatch.c
+#
+# Created by Dan Nygren
+# E-mail: dan.nygren@gmail.com
+# Permanent E-mail: Dan.Nygren@alumni.clemson.edu
+#
+#   This is the Makefile for an overall MMO Power Board Watchdog.
+#
+# CALLING SEQUENCE      make [target]
+#
+# EXAMPLES              make (Makes first rule, which acts like "make release")
+#                       make all (Combination of make release & make debug)
+#                       make release (Make release executable code)
+#                       make debug (Make debug executable code)
+#                       make clean  (Deletes all target and distribution files)
+#                       make remake (Combination of make clean & make all)
+#                       make lint (Perform static code analysis)
+#                       make file.PRE (Run preprocessor on file.c)
+#
+#                       make dist (Make a file for distribution)
+#                       make install (Installs and starts systemd service)
+#                       make uninstall (Uninstalls & stops systemd service)
+#
+# TARGET SYSTEM         MMO Flight Computer
+#
+# DEVELOPMENT SYSTEM    Linux, GNU make
+#
+# CALLS                 gcc, cppcheck
+#
+# CALLED BY             N/A
+#
+# INPUTS                overwatch.c
+#
+# OUTPUTS               Executable binaries
+#
+# RETURNS               Not Applicable
+#
+# ERROR HANDLING        If there is an error in a rule, make gives up on the
+#                       current rule
+#
+# WARNINGS              1. "make lint" invokes cppcheck, not lint.
+#                       2. pkg-config retrieves information needed to compile
+#                          most, but not all, installed libraries.
+#                          Run at the command line to see the flags generated:
+#                          pkg-config --cflags <library>
+#                          pkg-config --libs <library>
+#                      (N. Describe anything a maintainer should be aware of)
+#
+################################################################################
+
+# Where is the base directory from here?
+BASE := ..
+
+#
+# Project files
+#
+SRCS := overwatch.c
+EXE  := overwatch
+#
+# Files from $(BASE)/Common directory
+#
+COMSRCS := version.c
+
+#
+# Compiler
+#
+X86_CC  := /usr/bin/x86_64-linux-gnu-gcc-6
+ARM_CC  := /usr/bin/arm-linux-gnueabihf-gcc-6
+# Set compiler to one of the above options
+CC  := $(ARM_CC)
+#CC  := $(X86_CC)
+
+# If executed outside of a git repository or without git being installed,
+# what the GIT_COMMIT is set to when compiling the print version function.
+# A maximum of 16 hex digits is allowed for a uint64_t.
+# ABSENT_GIT_COMMIT := 012345678ABCDEF0
+# Hex words for "Decoded Git Dead"
+ABSENT_GIT_COMMIT := DEC0DED617DEAD
+
+# Enter the xz compressed tarball filename to be created by "make dist"
+DIST_TXZ = overwatch_dist.tar.xz
+
+#
+# For make install / uninstall
+#
+# Installation directory
+INSTALLDIR = /opt/overwatch
+
+# Executable including full path to it
+EXECUTABLE = /opt/overwatch/bin/overwatch
+
+# Name of the systemd service unit configuration file
+SERVICE = overwatch.service
+
+# If the STAGEDIR variable is undefined (the empty string) it has no effect.
+# When it is defined, it causes installations to be staged to temporary
+# directories for testing or before manually moving them to their final place.
+# Staged installations do not enable or start a service.
+#STAGEDIR = ./tmp_staged
+STAGEDIR =
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#^^^^^^^^^^^^ You should only have to change things above this line ^^^^^^^^^^^^
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+# Object file prefixes are the same as the source files
+OBJS := $(SRCS:.c=.o)
+
+#
+# Project Directories
+#
+RELDIR := release
+DBGDIR := debug
+COMDIR := $(BASE)/Common/C
+
+# It is a good practice to always explicitly state which shell make uses
+SHELL := /bin/sh
+
+#
+# Version tracking
+#
+# Use target specific variables here so these commands are run only when
+# release or debug builds are made. This way if a make install or uninstall
+# is requested on a system without git, we don't get an error message.
+release debug: BUILDER      := $(shell /usr/bin/id -un | /usr/bin/cut -c1-8)
+release debug: EPOCH        := $(shell /bin/date +%s)
+# If git exists and is executable AND we're making in a git repository,
+# set GIT_COMMIT to the git commit, otherwise set it to ABSENT_GIT_COMMIT
+# so this GIT_COMMIT variable doesn't cause an error when making outside git.
+release debug: GIT_COMMIT   := 0x$(shell \
+if $$([ -x /usr/bin/git ] && \
+/usr/bin/git rev-parse --git-dir > /dev/null 2>&1); \
+then echo $$(/usr/bin/git rev-parse --short=16 HEAD); \
+else echo $(ABSENT_GIT_COMMIT); fi)
+# SERIALNO        = 3 # Not needed for most SW
+# Command line defines (uses "=" for recursively expanded variable)
+CMDLINEDEFS     = -DBuilder=\"$(BUILDER)\"
+#CMDLINEDEFS     += -DSerialNo=$(SerialNo)
+CMDLINEDEFS     += -DEpoch=$(EPOCH)
+CMDLINEDEFS     += -DCommit=$(GIT_COMMIT)
+
+#
+# Compiler options
+#
+# The plan is to enable every warning reasonably possible, and make them errors
+# so they get fixed in the source code and not waived or ignored.
+#
+# -Wall         -> Enable all warnings
+# -Werror       -> Make warnings errors
+# -Wextra       -> Add some extra warnings not added by -Wall
+# -I dir        -> Add search for header files listed in the both
+#                  the #include "file" and #include <file> directives.
+# -iquote dir   -> Add search for header files listed in the form
+#                  #include "file" in these directories
+# -MMD          -> Ask the C pre-processor to write make rules to dependency
+#                  file(s) (.d for dependency extension) so #included local
+#                  header file dependencies don't have to be manually written.
+#                  This works in tandem with the following line in between
+#                  object and executable generation:
+#                  -include $(XXXOBJS:.o=.d)
+#                  -MMD omits system headers from the generated dependencies.
+#                  Use -MD to also preserve system headers as prerequisites.
+# -MP           -> This option instructs CPP to add a phony target for each
+#                  dependency other than the main file, causing each to depend
+#                  on nothing. These dummy rules work around errors that make
+#                  gives if you remove previously #included header files.
+# `pkg-config --cflags --libs libsystemd`
+#               -> pkg-config retrieves information about (most) installed
+#                  libraries and automatically creates the flags necessary
+#                  to compile using a given library.
+CC_OPTIONS      :=  -std=gnu11
+CC_OPTIONS      += -Wall
+CC_OPTIONS      += -Werror
+CC_OPTIONS      += -Wextra
+CC_OPTIONS      += -iquote ./Include
+CC_OPTIONS      += -iquote $(BASE)/Common/C/Include
+CC_OPTIONS      += -MMD
+CC_OPTIONS      += -MP
+CC_OPTIONS      += `pkg-config --cflags --libs libsystemd`
+
+#
+# Lint
+#
+LINT            := /usr/bin/cppcheck
+#
+# Lint options / includes
+#
+LINTOPTIONS     :=  --verbose
+LINTOPTIONS     += --enable=all
+LINTOPTIONS     += --suppress=missingIncludeSystem
+
+LINTCHECKCONFIG :=  --check-config
+LINTCHECKCONFIG += --suppress=missingIncludeSystem
+
+LINTINCLUDES    :=  -I ./Include
+LINTINCLUDES    += -I $(BASE)/Common/C/Include
+
+#
+# Release build settings
+#
+RELEXE = $(RELDIR)/$(EXE)
+RELOBJS = $(addprefix $(RELDIR)/, $(OBJS))
+RELCOMMONOBJS := $(addprefix $(COMDIR)/$(RELDIR)/, $(COMSRCS:.c=.o))
+#
+# Release compiler options
+#
+# -DNDEBUG  -> compiles "#ifdef NDEBUG" code
+# -O3       -> Optimize executable to a very high level
+RELCC_OPTIONS := -DNDEBUG
+RELCC_OPTIONS += -O3
+#
+# Release ARM gcc/g++ compiler options
+#
+# Automatic vectorization can generate code targeted for NEON from ordinary C
+# source code so less effort to is required produce efficient code. Code
+# becomes portable as no compiler specific source code features need to be used.
+#
+# To enable automatic vectorization on gcc/g++, use these options together:
+# -mcpu=cortex-a9   -> Specify ARMv7-A processor
+# -mfpu=neon        -> enable NEON support
+# -mfloat-abi=hard  -> if set to "softfp" (but not "soft") this allows the
+#                      generation of code using hardware floating-point
+#                      instructions, but still uses the soft-float calling
+#                      conventions, so all code doesn't need to be re-compiled.
+# -ftree-vectorize  -> Support SIMD on many arch (-O3 implies)
+# -ftree-vectorize-verbose=1  -> Takes an integer value specifying the level
+#                      of detail to provide, where 1 enables additional
+#                      printouts and higher values add even more information.
+#                      Indicates what vectorization the compiler is
+#                      performing, or what it is unable to perform because of
+#                      possible dependencies.
+RELARMCC_OPTIONS := -mcpu=cortex-a9
+RELARMCC_OPTIONS += -mfpu=neon
+# Commented out because "softfp" caused a compiler error and concern that "hard"
+# would cause some link problems. As such, just use whatever the default is.
+#RELARMCC_OPTIONS += -mfloat-abi=hard
+RELARMCC_OPTIONS += -ftree-vectorize
+RELARMCC_OPTIONS += -ftree-vectorizer-verbose=1
+# If the ARM compiler is being used, use the release code ARM compiler options.
+ifeq ($(CC),$(ARM_CC))
+    RELCC_OPTIONS += $(RELARMCC_OPTIONS)
+endif
+
+#
+# Debug build settings
+#
+DBGEXE = $(DBGDIR)/$(EXE)
+DBGOBJS = $(addprefix $(DBGDIR)/, $(OBJS))
+DBGCOMMONOBJS = $(addprefix $(COMDIR)/$(DBGDIR)/, $(COMSRCS:.c=.o))
+#
+# Debug compiler options
+#
+# -ggdb     -> Produce debugging information for use by the GNU Debugger (GDB)
+# -DDEBUG   -> compiles "#ifdef DEBUG" code
+# -Og       -> Enable optimizations that do not interfere with debugging.
+DBGCC_OPTIONS =  -ggdb
+DBGCC_OPTIONS += -DDEBUG
+DBGCC_OPTIONS += -Og
+
+#
+# Install options
+#
+# Mode that the installed directories can be set to.
+# User read, write, and aXcess to the directory
+# Group read and aXcess to the directory
+DIRMODE = u=rwx,g=rx
+#
+# Mode that the installed service unit file can be set to.
+# User read and write the file
+# Group read the file
+FILEMODE = u=rw,g=r
+#
+# Mode that the installed service unit file can be set to.
+# User read and write the file
+# Group read the file
+EXEFILEMODE = u=rwx,g=r
+
+#
+# Rules
+#
+
+# ### Rule to make release object and executable files ###
+# Automatic variables:
+# $^ Space delimited names of all the prerequisites
+# $@ File name of the target of the rule
+# $< Name of the first prerequisite
+release: $(RELEXE)
+
+$(RELEXE): $(RELOBJS) $(RELCOMMONOBJS)
+	$(CC) $(CC_OPTIONS) $(RELCC_OPTIONS) -o $(RELEXE) $^
+
+$(RELDIR)/%.o: %.c
+	/bin/mkdir -p $(RELDIR)
+	$(CC) -c $(CC_OPTIONS) $(RELCC_OPTIONS) -o $@ $<
+
+$(BASE)/Common/C/$(RELDIR)/%.o: $(BASE)/Common/C/%.c
+	/bin/mkdir -p  $(BASE)/Common/C/$(RELDIR)
+	$(CC) -c $(CC_OPTIONS) $(RELCC_OPTIONS) $(CMDLINEDEFS) -o $@ $<
+
+# ### Rule to make debug object and executable files ###
+# Automatic variables:
+# $^ Space delimited names of all the prerequisites
+# $@ File name of the target of the rule
+# $< Name of the first prerequisite
+debug: $(DBGEXE)
+
+$(DBGEXE): $(DBGOBJS) $(DBGCOMMONOBJS)
+	$(CC) $(CC_OPTIONS) $(DBGCC_OPTIONS) -o $(DBGEXE) $^
+
+$(DBGDIR)/%.o: %.c
+	/bin/mkdir -p $(DBGDIR)
+	$(CC) -c $(CC_OPTIONS) $(DBGCC_OPTIONS) -o $@ $<
+
+$(BASE)/Common/C/$(DBGDIR)/%.o: $(BASE)/Common/C/%.c
+	/bin/mkdir -p  $(BASE)/Common/C/$(DBGDIR)
+	$(CC) -c $(CC_OPTIONS) $(DBGCC_OPTIONS) $(CMDLINEDEFS) -o $@ $<
+#
+# Other rules
+#
+.PHONY: all clean lint remake
+
+# ### Rule to make release and debug executable and object files ###
+# Default build makes debug and release directories and release executables
+all: release debug
+
+# ### Rule to clean out executable, object, dependency, distribution and    ###
+# ### *.PRE files                                                           ###
+# The "-" at the beginning of the command tells GNU make ignore errors like
+# file not present etc. There is no need to delete parent directories that
+# were created with "mkdir -p", since they could have existed anyway.
+clean:
+	-/bin/rm -f $(RELEXE) $(RELOBJS) $(RELDIR)/*.d $(DBGEXE) $(DBGOBJS) \
+$(DBGDIR)/*.d $(RELCOMMONOBJS) $(DBGCOMMONOBJS) $(DIST_TXZ) *.PRE
+
+# ### Rule to perform static code analysis ###
+# Check lint configuration before running lint
+lint:
+	$(LINT) $(LINTCHECKCONFIG) $(LINTINCLUDES) $(SRCS) $(COMSRCS)
+	@echo
+	$(LINT) $(LINTOPTIONS) $(LINTINCLUDES) $(SRCS) $(COMSRCS)
+
+# ### Rule to clean and then re-make ###
+remake: clean all
+
+# #### Rule to only run the preprocessor on a source file
+# Useful for checking / debugging macros
+# Using the GNU compiler -E option, nothing happens except preprocessing.
+# Example: $ make file.PRE
+# The above will create the preprocessed file.PRE from the source file.
+%.PRE : %.c
+	$(CC) $(LINTINCLUDES) -E $< -o $@
+
+.PHONY: dist
+
+dist:
+# Exclude git, source, object, and debug files from distribution file.
+	/bin/tar --exclude $(DIST_TXZ) --exclude-vcs --exclude=*.c \
+--exclude=*.o --exclude=debug -cvaf $(DIST_TXZ) *
+
+.PHONY: uninstall
+uninstall:
+# Note that ifeq ($(STAGEDIR),) tests for an empty value of $(STAGEDIR) whereas
+# ifdef($(STAGEDIR)) would just test if the $(STAGEDIR) was ever defined.
+ifeq ($(STAGEDIR),)
+# The dashes in front of the stop and disable allow the makefile to continue
+# with the -f forced removes in case the service never started.
+	-/bin/systemctl stop $(SERVICE)
+	-/bin/systemctl disable $(SERVICE)
+	/bin/rm -f /etc/systemd/system/$(SERVICE)
+# Remove all directories with installation directory prefix.
+	/bin/rm -rf $(INSTALLDIR)
+else
+	/bin/rm -rf $(STAGEDIR)
+endif
+
+.PHONY: install
+
+# Only enable and start the systemd service when not staging.
+ifeq ($(STAGEDIR),)
+# If a staging directory is not defined, enable and start the systemd service.
+ENABLESERVICE = /bin/systemctl enable $(SERVICE)
+STARTSERVICE = /bin/systemctl start $(SERVICE)
+else
+# Else just pretend to have enabled and started the systemd service.
+ENABLESERVICE = true
+STARTSERVICE = true
+endif
+
+install:
+# If a release executable isn't available to install, print an error message
+# and exit.
+	@test -x $(RELEXE) || { echo -e "An $(RELEXE) executable does not \
+exist."; exit 1;}
+# Create directory
+	/usr/bin/install --mode $(DIRMODE) \
+--directory $(STAGEDIR)$(INSTALLDIR)/bin
+# Install file
+	/usr/bin/install --mode $(EXEFILEMODE) $(RELEXE) \
+$(STAGEDIR)$(INSTALLDIR)/bin/$(EXE)
+
+# Test if systemd-run (used to create and start a service) exists and is
+# non-zero in size with "test -s". If so, install and start the service.
+	/usr/bin/test -s /usr/bin/systemd-run && \
+/usr/bin/install -m $(DIRMODE) -d $(STAGEDIR)/etc/systemd/system && \
+/usr/bin/install -m $(FILEMODE) $(SERVICE) $(STAGEDIR)/etc/systemd/system && \
+$(ENABLESERVICE) && $(STARTSERVICE)
+ifneq ($(STAGEDIR),)
+	@echo "** When staging, the systemd $(SERVICE) is not enabled. **"
+	@echo "** When staging, the systemd $(SERVICE) is not started. **"
+endif

@@ -1,0 +1,244 @@
+################################################################################
+# GNUmakefile : Top level GNU makefile for the MAX repository
+#
+# Created by: Dan Nygren
+# Email: dan.nygren@gmail.com
+# Permanent Email: Dan.Nygren@alumni.clemson.edu
+#
+#   This is the top level makefile for the MAX (Modular, Autonomous, eXtendable)
+# flight software repository. This MSSS created makefile calls ASI's makefile
+# and provides a number of "phony" targets to help get MAX running on MSSS
+# flight computers. Note that MAX used to be named Modular Command and Data
+# Handling - Multi Threaded so you will see references to MCDH_MT in the
+# repository.
+#
+# CALLING SEQUENCE      make [target] [variable=assignment]
+#
+# EXAMPLES              make (Makes ASI's MAX - aka MCDH_MT)
+#                       make MCDH_VERSION="My Version" (broken w/o full source)
+#                       (Make ASI MAX with output version string "My Version")
+#                       make dist (Make a distribution file)
+#                       make install (Copies MAX to where it resides for use)
+#                       make systemd (Enables and starts systemd service)
+#                       make uninstall (stops & disables systemd & uninstalls)
+#                       make clean (Deletes distribution and runtime files)
+#
+# TARGET SYSTEM         Zedboard, MMO Flight Computer
+#
+# DEVELOPMENT SYSTEM    Linux, GNU make
+#
+# CALLS                 GNU make, tar, rm, test, install, setcap, userdel
+#                       useradd, chgrp, chown, xz (via tar), ASI's makefile
+#
+# CALLED BY             Not Applicable
+#
+# INPUTS                MAX.service, runtime MAX files
+#
+# OUTPUTS               *.tar.xz runtime and distribution files
+#                       Installs files on target
+#
+# RETURNS               Not Applicable
+#
+# ERROR HANDLING        If there is an error in a rule, make gives up on the
+#                       current rule
+#
+# WARNINGS             1) Staged installations do not enable or start a service.
+#                      2) setcap must run as root, so make install must also.
+#                      3) make clean contans a kludge to fix the problem with
+#                      ./MAX/make/Cond/make.MMO_Submodule.cond needing to be
+#                      deleted when MAX Dev Tool creates a new
+#                      ./MAX_PS/MMO_Submodule/make.MMO_Submodule.cond .
+#                      (4. Describe anything a maintainer should be aware of)
+#                      (N. Describe anything a maintainer should be aware of)
+#
+################################################################################
+
+# Enter the xz compressed tarball filename to be created by "make dist"
+DIST_TXZ := MMO_MAX_dist.tar.xz
+
+# Enter the xz compressed tarball filename to be unpacked by "make install"
+TXZ := MMO_MAX.tar.xz
+
+# Installation directory
+INSTALLDIR := /opt/MAX
+
+# Executable
+EXE := MCDH_MT.exe
+
+# Full path to executable
+EXECUTABLE := $(INSTALLDIR)/bin/$(EXE)
+
+# Location of files destined for target installation directory
+TARGET_FILES := Execute/Target
+
+# Name of socket file MAX creates that needs to be removed before a new
+# instance of MAX is installed.
+SOCKETFILE := /tmp/CtrlStatus001
+
+# Name of the system login
+LOGIN := max
+
+# Name of the systemd service unit configuration file
+SERVICE := MAX.service
+
+# Name of any additional groups associated with the service.
+# The flag is included to avoid an error if there are no additional groups.
+# The uucp group is needed to access "/dev/ttyXXX" on the Zedboard and Rincon
+# Astro SDR.
+GROUPS := --groups uucp
+# The Raspberry Pi uses the dialout group to access "/dev/ttyXXX"
+#GROUPS := --groups dialout
+# You can separate multiple groups with a comma, but you will get an error if
+# both groups do not exist. Usually the uucp OR dialout group exists, not both.
+#GROUPS := --groups uucp,dialout
+
+# If the STAGEDIR variable is undefined (the empty string) it has no effect.
+# When it is defined, it causes installations to be staged to temporary
+# directories for testing or before manually moving them to their final place.
+# Staged installations do not enable or start a service.
+#STAGEDIR := ./tmp_staged
+STAGEDIR :=
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#^^^^^^^^^^^^ You should only have to change things above this line ^^^^^^^^^^^^
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+# It is a good practice to always explicitly state which shell make uses
+SHELL := /bin/sh
+
+# tar create options
+TARCOPTIONS := --create
+TARCOPTIONS += --auto-compress
+TARCOPTIONS += --verbose
+TARCOPTIONS += --preserve-permissions
+TARCOPTIONS += --file
+
+# tar extract options
+TARXOPTIONS := --extract
+TARXOPTIONS += --auto-compress
+TARXOPTIONS += --verbose
+TARXOPTIONS += --preserve-permissions
+TARXOPTIONS += --strip-components=1
+
+# Mode that the installed directories can be set to.
+# User read, write, and aXcess the directory
+# Group read and aXcess the directory
+# Others read the directory
+DIRMODE := u=rwx,g=rx,o=r
+
+# Mode that the installed files can be set to.
+# User read and write the file
+# Group read the file
+# Others read the file
+FILEMODE := u=rw,g=r,o=r
+
+#
+# Rules
+#
+
+#
+# Other rules
+#
+
+ASI_MAKEFILE_LOC := MAX_PS
+# From ASI's setup_ArmCortexA9_Ubuntu_no_fw.sh file
+export BUILD_PROJECT=Malin_MMO
+export BUILD_SPEC=ArmCortexA9_Ubuntu.bs
+export NO_COMPILE_FRAMEWORK=true
+
+.PHONY: default
+default:
+	$(MAKE) --directory $(ASI_MAKEFILE_LOC) $(MAKEFLAGS) $(MAKECMDGOALS)
+
+.PHONY: dist
+dist:
+	/bin/cp MAX/bin/$(BUILD_PROJECT)_$(BUILD_SPEC)/$(EXE) \
+            $(TARGET_FILES)/bin
+# Create a separate xz compressed runtime MAX files tarball
+	/bin/tar --exclude .gitignore --directory=$(TARGET_FILES) \
+            $(TARCOPTIONS) $(TXZ) .
+# Wrap the MAX runtime tarball, makefile, systemd service unit configuration
+# file, and README.md into an xz compressed distribution tar file.
+	/bin/tar --exclude $(DIST_TXZ) $(TARCOPTIONS) $(DIST_TXZ) \
+            $(TXZ) GNUmakefile MAX.service README.md
+
+.PHONY: uninstall
+uninstall:
+# Note that ifeq ($(STAGEDIR),) tests for an empty value of $(STAGEDIR) whereas
+# ifdef($(STAGEDIR)) would just test if the $(STAGEDIR) was ever defined.
+ifeq ($(STAGEDIR),)
+# The dashes in front of the stop and disable allow the makefile to continue
+# with the -f forced removes in case the service never started.
+	-/bin/systemctl stop $(SERVICE)
+	-/bin/systemctl disable $(SERVICE)
+	/bin/rm -f /etc/systemd/system/$(SERVICE)
+# Remove all directories with installation directory prefix.
+	/bin/rm -rf $(INSTALLDIR)
+# Remove IPC socket file
+	/bin/rm -f $(SOCKETFILE)
+# Remove login
+	-/usr/sbin/userdel $(LOGIN)
+else
+	/bin/rm -rf $(STAGEDIR)
+endif
+
+.PHONY: install
+install:
+# Create a group with the same name as the login
+	/usr/sbin/groupadd -f $(LOGIN)
+# Create a system login in a group of the same name plus additional groups
+	-/usr/sbin/useradd --system --gid $(LOGIN) $(GROUPS) $(LOGIN)
+# Set owner and group of directory to the system login
+	/usr/bin/install --mode $(DIRMODE) --owner=$(LOGIN) --group=$(LOGIN) \
+--directory $(STAGEDIR)$(INSTALLDIR)
+# Install files and set owner and group to the system login
+	/bin/tar $(TARXOPTIONS) --directory=$(STAGEDIR)$(INSTALLDIR) \
+--file=$(TXZ)
+	/bin/chown --recursive $(LOGIN) $(STAGEDIR)$(INSTALLDIR)
+	/bin/chgrp --recursive $(LOGIN) $(STAGEDIR)$(INSTALLDIR)
+# Set the following cap_sys_nice capability operator flags on the executable:
+# e = effective, i = inheritable and p = permitted
+	@echo "*** setcap must run as root to set capabilities ***"
+	@echo "*** once set, executable can be run as a normal user. ***"
+	/sbin/setcap 'cap_sys_nice=eip' $(EXECUTABLE)
+# Make sure IPC socket file has been removed
+	/bin/rm -f $(SOCKETFILE)
+
+.PHONY: systemd
+ifeq ($(STAGEDIR),)
+# If no staging directory defined, set the systemd service to enable and start.
+ENABLESERVICE := /bin/systemctl enable $(SERVICE)
+STARTSERVICE := /bin/systemctl start $(SERVICE)
+else
+# Else just pretend to have enabled and started the systemd service.
+ENABLESERVICE := true
+STARTSERVICE := true
+endif
+
+systemd:
+# Test if systemd-run (used to create and start a service) exists and is
+# non-zero in size. If so, install and start the service.
+	/usr/bin/test -s /usr/bin/systemd-run && \
+/usr/bin/install -m $(DIRMODE) -d $(STAGEDIR)/etc/systemd/system && \
+/usr/bin/install -m $(FILEMODE) $(SERVICE) $(STAGEDIR)/etc/systemd/system && \
+$(ENABLESERVICE) && $(STARTSERVICE)
+ifneq ($(STAGEDIR),)
+	@echo "*** When staging, the systemd $(SERVICE) is not enabled. ***"
+	@echo "*** When staging, the systemd $(SERVICE) is not started. ***"
+else
+	@echo "*** systemd $(SERVICE) started and enabled. ***"
+endif
+
+# ### Rule to clean out the distribution file ###
+# The "-" at the beginning of the command tells GNU make ignore errors like
+# file not present etc.
+.PHONY: clean
+clean: default
+	-/bin/rm -f $(TXZ)
+	-/bin/rm -f $(DIST_TXZ)
+	-/bin/rm -f ./MAX/make/Cond/make.MMO_Submodule.cond
+# If ./MAX_PS/MMO_Submodule/make.MMO_Submodule.cond (created by MAX Dev Tool)
+# changes, ./MAX/make/Cond/make.MMO_Submodule.cond must be deleted before a
+# "make" of MAX can be performed. This is a bug in ASI's make system that I
+# am creating a temporary kludge "fix" for here by deleting the file with a
+# "make clean". D.N.
