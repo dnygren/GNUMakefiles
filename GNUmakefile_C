@@ -2,8 +2,7 @@
 # GNUmakefile : GNU makefile for overwatch.c
 #
 # Created by Dan Nygren
-# E-mail: dan.nygren@gmail.com
-# Permanent E-mail: Dan.Nygren@alumni.clemson.edu
+# Email: dan.nygren@gmail.com
 #
 #   This is the Makefile for an overall MMO Power Board Watchdog.
 #

@@ -3,18 +3,21 @@
 #
 # Created by: Dan Nygren
 # Email: dan.nygren@gmail.com
-# Permanent Email: Dan.Nygren@alumni.clemson.edu
 #
-#   This is the Makefile for a program acts as a payload agent for ASI's MAX.
+#   Makefile for a program acts as a payload agent for ASI's MAX.
 #
 # CALLING SEQUENCE      make [target]
 #
-# EXAMPLES              make (Makes first rule, which acts like "make release")
+# EXAMPLES              make (The same as "make all")
 #                       make all (Combination of make release & make debug)
-#                       make release (Make release executable code)
-#                       make debug (Make debug executable code)
 #                       make clean  (Deletes all targets)
 #                       make remake (Combination of make clean & make all)
+#                       make release (Make release executable code)
+#                       make debug (Make debug executable code)
+#                       make dist (Make a distribution file)
+#                       make install (Copies payload_agent to where it is used)
+#                       make systemd (Enables and starts systemd service)
+#                       make uninstall (stops & disables systemd & uninstalls)
 #                       make lint (Perform static code analysis)
 #                       make file.PRE (Run preprocessor on source files)
 #
@@ -33,7 +36,7 @@
 # RETURNS               Not Applicable
 #
 # ERROR HANDLING        If there is an error in a rule, make gives up on the
-#                       current rule
+#                       current rule.
 #
 # WARNINGS              1. "make lint" invokes cppcheck, not lint.
 #                      (2. Describe anything a maintainer should be aware of)
@@ -71,19 +74,13 @@ C++ := $(ARM_C++)
 #C++ := $(X86_C++)
 #C++ := /usr/bin/g++
 
-# If executed outside of a git repository or without git being installed,
-# what the GIT_COMMIT is set to when compiling the print version function.
-# A maximum of 16 hex digits is allowed for a uint64_t.
-# ABSENT_GIT_COMMIT := 012345678ABCDEF0
-# Hex words for "Decoded Git Dead"
-ABSENT_GIT_COMMIT := DEC0DED617DEAD
+# Enter the xz compressed tarball filename to be created by "make dist"
+DIST_TXZ := payload_agent_dist.tar.xz
 
-#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-#^^^^^^^^^^^^ You should only have to change things above this line ^^^^^^^^^^^^
-#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-# Object file prefixes are the same as the source files
-OBJS := $(SRCS:$(SUFX)=.o)
+# Enter the xz compressed tarball filename to be unpacked by "make install"
+TXZ := payload_agent.tar.xz
+# Installation directory
+INSTDIR := /opt/payload_agent
 
 #
 # Project Directories
@@ -91,10 +88,101 @@ OBJS := $(SRCS:$(SUFX)=.o)
 RELDIR := release
 DBGDIR := debug
 COMDIR := $(BASE)/Common/C++
+# Location of test scripts
+TSTDIR := Test_Apps
+# Location of example child payload program
+# (Chose debug version as most appropriate child_payload program to test with.)
+CHILDPAYLOAD := ../child_payload/debug/child_payload
+
+# Use release or debug executable?
+EXEDIR := $(RELDIR)
+# EXEDIR := $(DBGDIR)
+
+# Executable
+EXE := payload_agent
+
+# Name of the system login
+LOGIN := payload_agent
+
+# Name of the systemd service unit configuration file
+SERVICE := payload_agent.service
+
+# Name of any additional groups associated with the service.
+# The flag is included to avoid an error if there are no additional groups.
+# The uucp group is needed to access "/dev/ttyXXX" on the Zedboard and Rincon
+# Astro SDR.
+#GROUPS := --groups uucp
+# The Raspberry Pi uses the dialout group to access "/dev/ttyXXX"
+#GROUPS := --groups dialout
+# Add this group in order to access the socket file created by MAX.
+GROUPS := --groups max
+# You can separate multiple groups with a comma, but you will get an error if
+# both groups do not exist. Usually the uucp OR dialout group exists, not both.
+#GROUPS := --groups uucp,dialout
+
+# If the STAGEDIR variable is undefined (the empty string) it has no effect.
+# When it is defined, it causes installations to be staged to temporary
+# directories for testing or before manually moving them to their final place.
+# Staged installations do not enable or start a service.
+#STAGEDIR := ./tmp_staged
+STAGEDIR :=
+
+# If executed outside of a git repository or without git being installed,
+# what the GIT_COMMIT is set to when compiling the print version function.
+# A maximum of 16 hex digits is allowed for a uint64_t.
+# ABSENT_GIT_COMMIT := 012345678ABCDEF0
+# Hex words for "Decoded Git Dead"
+ABSENT_GIT_COMMIT := DEC0DED617DEAD
+
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+# ^^^^^^^^^^ Place code that may need modification above this point. ^^^^^^^^^^
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 # It is a good practice to always explicitly state which shell make uses
 SHELL := /bin/sh
 
+# tar create options
+TARCOPTIONS := --create
+TARCOPTIONS += --auto-compress
+TARCOPTIONS += --verbose
+TARCOPTIONS += --preserve-permissions
+TARCOPTIONS += --file
+
+# tar extract options
+TARXOPTIONS := --extract
+TARXOPTIONS += --auto-compress
+TARXOPTIONS += --verbose
+TARXOPTIONS += --preserve-permissions
+# TARXOPTIONS += --strip-components=1
+
+# Mode that the installed directories can be set to.
+# User read, write, and aXcess the directory
+# Group read and aXcess the directory
+# Others read the directory
+DIRMODE := u=rwx,g=rx,o=r
+
+# Mode that the installed files can be set to.
+# User read and write the file
+# Group read the file
+# Others read the file
+FILEMODE := u=rw,g=r,o=r
+
+# Location of files destined for target installation directory
+TARGET_FILES := ./$(RELDIR)
+TARGET_FILES += ./$(DBGDIR)
+TARGET_FILES += ./$(TSTDIR)
+
+# Full path to executable
+EXECUTABLE := $(INSTDIR)/$(EXEDIR)/$(EXE)
+
+# Object file prefixes are the same as the source files
+OBJS := $(SRCS:$(SUFX)=.o)
+
+#(uses "=" for recursively expanded variable)
+EXECMDLINEDEFS = -DInst_Dir=\"$(INSTDIR)\"
+EXECMDLINEDEFS += -DTest_Apps=\"$(TSTDIR)\"
+
+COMCMDLINEDEFS     = -DBuilder=\"$(BUILDER)\"
 #
 # Version tracking
 #
@@ -112,11 +200,12 @@ if $$([ -x /usr/bin/git ] && \
 then echo $$(/usr/bin/git rev-parse --short=16 HEAD); \
 else echo $(ABSENT_GIT_COMMIT); fi)
 # SERIALNO        = 3 # Not needed for most SW
-# Command line defines (uses "=" for recursively expanded variable)
-CMDLINEDEFS     = -DBuilder=\"$(BUILDER)\"
-#CMDLINEDEFS     += -DSerialNo=$(SerialNo)
-CMDLINEDEFS     += -DEpoch=$(EPOCH)
-CMDLINEDEFS     += -DCommit=$(GIT_COMMIT)
+# Common directory command line defines
+#(uses "=" for recursively expanded variable)
+COMCMDLINEDEFS     = -DBuilder=\"$(BUILDER)\"
+#COMCMDLINEDEFS     += -DSerialNo=$(SerialNo)
+COMCMDLINEDEFS     += -DEpoch=$(EPOCH)
+COMCMDLINEDEFS     += -DCommit=$(GIT_COMMIT)
 
 #
 # Compiler options
@@ -141,10 +230,6 @@ CMDLINEDEFS     += -DCommit=$(GIT_COMMIT)
 #                  dependency other than the main file, causing each to depend
 #                  on nothing. These dummy rules work around errors that make
 #                  gives if you remove previously #included header files.
-# `pkg-config --cflags --libs libsystemd`
-#               -> pkg-config retrieves information about (most) installed
-#                  libraries and automatically creates the flags necessary
-#                  to compile using a given library.
 C++OPTIONS      :=  -std=gnu++14
 C++OPTIONS      += -Wall
 C++OPTIONS      += -Werror
@@ -153,7 +238,6 @@ C++OPTIONS      += -iquote ./Include
 C++OPTIONS      += -iquote $(BASE)/Common/C++/Include
 C++OPTIONS      += -MMD
 C++OPTIONS      += -MP
-#C++_OPTIONS      += `pkg-config --cflags --libs libsystemd`
 # i2c-dev is a header only package, therefore there is no library to link to.
 #C++OPTIONS      += `pkg-config --cflags --libs libi2c` // N/A per above
 
@@ -243,6 +327,10 @@ endif
 # Rules
 #
 
+# ### Rule to make release and debug executable and object files ###
+.PHONY: all
+all: release debug
+
 # ### Rule to make release object and executable files ###
 # Automatic variables:
 # $^ Space delimited names of all the prerequisites
@@ -256,17 +344,17 @@ endif
 release: $(RELEXE)
 
 $(RELEXE): $(RELOBJS) $(RELCOMMONOBJS)
-	$(C++) $(C++OPTIONS) $(RELC++OPTIONS) -o $(RELEXE) $^
+	$(C++) $(C++OPTIONS) $(RELC++OPTIONS) $(EXECMDLINEDEFS) -o $(RELEXE) $^
 
 -include $(RELOBJS:.o=.d)
 
 $(RELDIR)/%.o: %$(SUFX)
 	/bin/mkdir -p $(RELDIR)
-	$(C++) -c $(C++OPTIONS) $(RELC++OPTIONS) -o $@ $<
+	$(C++) -c $(C++OPTIONS) $(RELC++OPTIONS) $(EXECMDLINEDEFS) -o $@ $<
 
 $(BASE)/Common/C++/$(RELDIR)/%.o: $(BASE)/Common/C++/%$(SUFX)
 	/bin/mkdir -p  $(BASE)/Common/C++/$(RELDIR)
-	$(C++) -c $(C++OPTIONS) $(RELC++OPTIONS) $(CMDLINEDEFS) -o $@ $<
+	$(C++) -c $(C++OPTIONS) $(RELC++OPTIONS) $(COMCMDLINEDEFS) -o $@ $<
 
 # ### Rule to make debug object and executable files ###
 # Automatic variables:
@@ -281,48 +369,121 @@ $(BASE)/Common/C++/$(RELDIR)/%.o: $(BASE)/Common/C++/%$(SUFX)
 debug: $(DBGEXE)
 
 $(DBGEXE): $(DBGOBJS) $(DBGCOMMONOBJS)
-	$(C++) $(C++OPTIONS) $(DBGC++OPTIONS) -o $(DBGEXE) $^
+	$(C++) $(C++OPTIONS) $(DBGC++OPTIONS) $(EXECMDLINEDEFS) -o $(DBGEXE) $^
 
 -include $(DBGOBJS:.o=.d)
 
 $(DBGDIR)/%.o: %$(SUFX)
 	/bin/mkdir -p $(DBGDIR)
-	$(C++) -c $(C++OPTIONS) $(DBGC++OPTIONS) -o $@ $<
+	$(C++) -c $(C++OPTIONS) $(DBGC++OPTIONS) $(EXECMDLINEDEFS) -o $@ $<
 
 $(BASE)/Common/C++/$(DBGDIR)/%.o: $(BASE)/Common/C++/%$(SUFX)
 	/bin/mkdir -p  $(BASE)/Common/C++/$(DBGDIR)
-	$(C++) -c $(C++OPTIONS) $(DBGC++OPTIONS) $(CMDLINEDEFS) -o $@ $<
+	$(C++) -c $(C++OPTIONS) $(DBGC++OPTIONS) $(COMCMDLINEDEFS) -o $@ $<
 
 #
 # Other rules
 #
-.PHONY: all clean lint remake
 
-# ### Rule to make release and debug executable and object files ###
-# Default build makes debug and release directories and release executables
-all: release debug
-
-# ### Rule to clean out executable, object, dependency and *.PRE files ###
+# ### Rule to clean out executable, object, dependency *.PRE and dist files ###
 # The "-" at the beginning of the command tells GNU make ignore errors like
 # file not present etc. There is no need to delete parent directories that
 # were created with "mkdir -p", since they could have existed anyway.
+.PHONY: clean
 clean:
 	-/bin/rm -f $(RELEXE) $(RELOBJS) $(RELDIR)/*.d $(DBGEXE) $(DBGOBJS) \
-$(DBGDIR)/*.d $(RELCOMMONOBJS) $(DBGCOMMONOBJS) *.PRE
+$(DBGDIR)/*.d $(RELCOMMONOBJS) $(DBGCOMMONOBJS) *.PRE $(DIST_TXZ) $(TXZ)
 
 # ### Rule to perform static code analysis ###
+.PHONY: lint
 lint:
-	$(LINT) $(LINTCHECKCONFIG) $(LINTINCLUDES) $(SRCS) $(COMSRCS)
+	$(LINT) $(LINTCHECKCONFIG) $(LINTINCLUDES) $(SRCS)
 	@echo
-	$(LINT) $(LINTOPTIONS) $(LINTINCLUDES) $(SRCS) $(COMSRCS)
+	$(LINT) $(LINTOPTIONS) $(LINTINCLUDES) $(SRCS)
 
 # ### Rule to clean and then re-make ###
+.PHONY: remake
 remake: clean all
 
 # #### Rule to only run the preprocessor on a source file
 # Useful for checking / debugging macros
-# Using the GNU compiler -E option, nothing happens except preprocessing.
+# Using the GNU Compiler -E option, nothing happens except preprocessing.
 # Example: $ make file.PRE
 # The above will create the preprocessed file.PRE from the source file.
+.PHONY: file.PRE
 %.PRE : %$(SUFX)
 	$(C++) $(LINTINCLUDES) -E $< -o $@
+
+.PHONY: dist
+dist:
+# Copy the example child payload program to the test applications directory
+	/bin/cp $(CHILDPAYLOAD) $(TSTDIR)
+# Create an xz compressed runtime payload_agent files tarball
+	/bin/tar --exclude='*.o' --exclude='*.d' \
+            $(TARCOPTIONS) $(TXZ) $(RELDIR) $(DBGDIR) $(TSTDIR)
+# Wrap the runtime tarball, GNUmakefile, systemd service unit configuration
+# file, and README.md into an xz compressed distribution tar file.
+	/bin/tar $(TARCOPTIONS) $(DIST_TXZ) \
+            $(TXZ) GNUmakefile payload_agent.service README
+
+.PHONY: uninstall
+uninstall:
+# Note that ifeq ($(STAGEDIR),) tests for an empty value of $(STAGEDIR) whereas
+# ifdef($(STAGEDIR)) would just test if the $(STAGEDIR) was ever defined.
+ifeq ($(STAGEDIR),)
+# The dashes in front of the stop and disable allow the makefile to continue
+# with the -f forced removes in case the service never started.
+	-/bin/systemctl stop $(SERVICE)
+	-/bin/systemctl disable $(SERVICE)
+	/bin/rm -f /etc/systemd/system/$(SERVICE)
+# If payload_agent has not been stopped by systemd, ensure payload_agent is
+# no longer running.
+	-/usr/bin/pkill $(EXE)
+# Remove all directories with installation directory prefix.
+	/bin/rm -rf $(INSTDIR)
+# Remove login
+	-/usr/sbin/userdel $(LOGIN)
+else
+	/bin/rm -rf $(STAGEDIR)
+endif
+
+.PHONY: install
+install:
+# Ensure the installation is not going to occur on top of a running
+# payload_agent.
+	-/usr/bin/pkill $(EXE)
+# Create a group with the same name as the login
+	/usr/sbin/groupadd -f $(LOGIN)
+# Create a system login in a group of the same name plus additional groups
+	-/usr/sbin/useradd --system --gid $(LOGIN) $(GROUPS) $(LOGIN)
+# Set owner and group of directory to the system login
+	/usr/bin/install --mode $(DIRMODE) --owner=$(LOGIN) --group=$(LOGIN) \
+--directory $(STAGEDIR)$(INSTDIR)
+# Install files and set owner and group to the system login
+	/bin/tar $(TARXOPTIONS) --directory=$(STAGEDIR)$(INSTDIR) \
+--file=$(TXZ)
+	/bin/chown --recursive $(LOGIN) $(STAGEDIR)$(INSTDIR)
+	/bin/chgrp --recursive $(LOGIN) $(STAGEDIR)$(INSTDIR)
+
+.PHONY: systemd
+ifeq ($(STAGEDIR),)
+# If no staging directory defined, set the systemd service to enable and start.
+ENABLESERVICE := /bin/systemctl enable $(SERVICE)
+STARTSERVICE := /bin/systemctl start $(SERVICE)
+else
+# Else just pretend to have enabled and started the systemd service.
+ENABLESERVICE := true
+STARTSERVICE := true
+endif
+
+systemd:
+# Test if systemd-run (used to create and start a service) exists and is
+# non-zero in size. If so, install the service.
+	/usr/bin/test -s /usr/bin/systemd-run && \
+/usr/bin/install -m $(DIRMODE) -d $(STAGEDIR)/etc/systemd/system && \
+/usr/bin/install -m $(FILEMODE) $(SERVICE) $(STAGEDIR)/etc/systemd/system && \
+$(ENABLESERVICE)
+# /usr/bin/install -m $(FILEMODE) $(SERVICE) $(STAGEDIR)/etc/systemd/system && \
+# $(ENABLESERVICE) && $(STARTSERVICE)
+	@echo "*** The systemd $(SERVICE) requires another service. ***"
+	@echo "*** Therefore $(SERVICE) is enabled but not started here. ***"
